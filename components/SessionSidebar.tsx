@@ -1,5 +1,10 @@
 "use client";
 
+// NexusOPAI: the workspace directory is fixed by the platform (cwd=/<agent
+// name>), so the in-app project/cwd switcher is disabled — switching here
+// would only point pi-web at directories outside the agent's workspace.
+export const LOCK_CWD = true;
+
 import { useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef, type CSSProperties, type ReactNode } from "react";
 import type { SessionInfo } from "@/lib/types";
 import { loadExplorerOpen, saveExplorerOpen } from "@/lib/file-explorer-state";
@@ -1059,10 +1064,14 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
           </div>
         </div>
 
-        {/* CWD picker */}
+        {/* CWD picker — locked by the platform: the workspace directory is
+            fixed (cwd=/<agent name>), so switching here is disabled. */}
         <div ref={dropdownRef} style={{ position: "relative" }}>
           <button
-            onClick={() => setDropdownOpen((v) => !v)}
+            onClick={() => {
+              if (!LOCK_CWD) setDropdownOpen((v) => !v);
+            }}
+            disabled={LOCK_CWD}
             title={selectedProject?.root ?? selectedCwd ?? ""}
             style={{
               width: "100%",
@@ -1072,10 +1081,11 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               background: selectedCwd ? "var(--bg-hover)" : "rgba(37,99,235,0.06)",
               border: selectedCwd ? "1px solid var(--border)" : "1px solid rgba(37,99,235,0.4)",
               borderRadius: 7,
-              cursor: "pointer",
+              cursor: LOCK_CWD ? "not-allowed" : "pointer",
               fontSize: 12,
               color: "var(--text)",
               textAlign: "left",
+              opacity: LOCK_CWD ? 0.55 : 1,
               transition: "border-color 0.15s, background 0.15s",
             }}
           >
