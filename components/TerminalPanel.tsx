@@ -123,6 +123,8 @@ export function TerminalPanel({ cwd }: Props) {
           send(chunk);
         };
         if (data === "\r") {
+          // The pty bridge splits CRs and pauses before writing them, so a
+          // plain immediate send keeps total latency to one pause.
           flushBuf();
           send("\r");
           return;
