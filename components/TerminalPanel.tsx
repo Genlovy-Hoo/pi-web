@@ -28,8 +28,6 @@ export function TerminalPanel({ cwd }: Props) {
   // Serialize keystroke POSTs — parallel writes to the pty stdin arrive out of
   // order and scramble the command (e.g. "echo x" → "echx").
   const inputQueueRef = useRef<Promise<unknown>>(Promise.resolve());
-  const inputBufRef = useRef("");
-  const inputTimerRef = useRef<number | null>(null);
 
   // Drag the divider on top of the panel to resize its height.
   useEffect(() => {
@@ -98,40 +96,15 @@ export function TerminalPanel({ cwd }: Props) {
       term.focus();
 
       term.onData((data) => {
-        // Coalesce keystrokes into a ~30ms window, but NEVER merge a CR into
-        // the chunk: bash's readline leaves the line un-submitted when the
-        // trailing Enter arrives in the same write as the command text. A CR
-        // is flushed separately so readline sees it as a fresh accept-line.
-        const send = (chunk: string) => {
-          const id = sessionIdRef.current;
-          if (!id || !chunk) return;
-          inputQueueRef.current = inputQueueRef.current
-            .then(() => fetch("/api/terminal/session", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ id, data: chunk }),
-            }))
-            .catch(() => {});
-        };
-        const flushBuf = () => {
-          if (inputTimerRef.current !== null) {
-            window.clearTimeout(inputTimerRef.current);
-            inputTimerRef.current = null;
-          }
-          const chunk = inputBufRef.current;
-          inputBufRef.current = "";
-          send(chunk);
-        };
-        if (data === "\r") {
-          // The pty bridge splits CRs and pauses before writing them, so a
-          // plain immediate send keeps total latency to one pause.
-          flushBuf();
-          send("\r");
-          return;
-        }
-        inputBufRef.current += data;
-        if (inputTimerRef.current !== null) window.clearTimeout(inputTimerRef.current);
-        inputTimerRef.current = window.setTimeout(flushBuf, 30);
+        const id = sessionIdRef.current;
+        if (!id) return;
+        inputQueueRef.current = inputQueueRef.current
+          .then(() => fetch("/api/terminal/session", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id, data }),
+          }))
+          .catch(() => {});
       });
 
       // Open the SSE stream; first event carries the session id.
@@ -140,12 +113,7 @@ export function TerminalPanel({ cwd }: Props) {
       void (async () => {
         try {
           const res = await fetch(`/api/terminal/session?cwd=${encodeURIComponent(cwd)}&cols=${term.cols}&rows=${term.rows}`, { signal: abort.signal });
-          if (!res.ok) {
-            const body = await res.json().catch(() => null);
-            term.writeln(`\x1b[31mterminal: ${res.status} ${body?.error ?? res.statusText}\x1b[0m`);
-            return;
-          }
-          if (!res.body) return;
+          if (!res.ok || !res.body) return;
           const reader = res.body.getReader();
           const decoder = new TextDecoder();
           let buf = "";
@@ -158,8 +126,9 @@ export function TerminalPanel({ cwd }: Props) {
               const raw = buf.slice(0, idx);
               buf = buf.slice(idx + 2);
               for (const line of raw.split("\n")) {
-                if (!line.startsWith("data: ")) continue;
-                const payload = line.slice(6);
+                const payload = line.startsWith("data: ")
+                  ? line.slice(6)
+                  : line; // tolerate continuation lines lacking the prefix
                 if (payload.startsWith("__session__")) {
                   sessionIdRef.current = payload.slice("__session__".length);
                   continue;
