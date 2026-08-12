@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { getAllowedFileRoots, isFilePathAllowed, isExistingFilePathAllowed } from "@/lib/file-access";
+import { existsSync, statSync } from "node:fs";
 
 // Python PTY bridge: forks a PTY, execs bash in `cwd`, forwards PTY output to
 // stdout and stdin to the PTY. Control messages (resize) arrive on fd 3 as
@@ -63,9 +63,17 @@ async function checkCwd(cwd: string): Promise<NextResponse | null> {
   if (!cwd || typeof cwd !== "string") {
     return NextResponse.json({ error: "cwd is required" }, { status: 400 });
   }
-  const roots = await getAllowedFileRoots();
-  if (!isFilePathAllowed(cwd, roots) || !isExistingFilePathAllowed(cwd, roots)) {
-    return NextResponse.json({ error: "Access denied" }, { status: 403 });
+  // ponytail: agent containers are single-tenant — the container is the
+  // security boundary and a shell reaches any path anyway. Upstream's
+  // file-access allow-list derives from pi sessions, which don't exist before
+  // the first chat message (terminal would reject the workspace cwd). Validate
+  // existence only.
+  try {
+    if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
+      return NextResponse.json({ error: "cwd is not a directory" }, { status: 400 });
+    }
+  } catch {
+    return NextResponse.json({ error: "cwd is not a directory" }, { status: 400 });
   }
   return null;
 }

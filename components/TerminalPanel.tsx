@@ -113,7 +113,12 @@ export function TerminalPanel({ cwd }: Props) {
       void (async () => {
         try {
           const res = await fetch(`/api/terminal/session?cwd=${encodeURIComponent(cwd)}&cols=${term.cols}&rows=${term.rows}`, { signal: abort.signal });
-          if (!res.ok || !res.body) return;
+          if (!res.ok) {
+            const body = await res.json().catch(() => null);
+            term.writeln(`\x1b[31mterminal: ${res.status} ${body?.error ?? res.statusText}\x1b[0m`);
+            return;
+          }
+          if (!res.body) return;
           const reader = res.body.getReader();
           const decoder = new TextDecoder();
           let buf = "";
