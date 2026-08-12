@@ -247,6 +247,7 @@ export function AppShell() {
 
   // Single active panel — only one dropdown open at a time
   const [activeTopPanel, setActiveTopPanel] = useState<"branches" | "system" | "session" | "language" | null>(null);
+  const [terminalOpen, setTerminalOpen] = useState(false);
   const [topPanelPos, setTopPanelPos] = useState<{ top: number; left: number; width: number } | null>(null);
 
   const toggleTopPanel = useCallback((
@@ -1351,6 +1352,34 @@ export function AppShell() {
           </svg>
           {!mobile && <span>{translate("system.label")}</span>}
         </button>
+        <button
+          type="button"
+          onClick={() => setTerminalOpen((v) => !v)}
+          title={translate("terminal.label")}
+          aria-label={translate("terminal.label")}
+          aria-pressed={terminalOpen}
+          style={{
+            display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+            width: mobile ? TOP_BAR_ICON_BUTTON_SIZE : undefined,
+            height: "100%", padding: mobile ? 0 : "0 12px",
+            background: terminalOpen ? "var(--bg-selected)" : "none",
+            border: "none",
+            borderTop: terminalOpen ? "2px solid var(--accent)" : "2px solid transparent",
+            borderRight: "1px solid var(--border)",
+            cursor: "pointer",
+            color: terminalOpen ? "var(--text)" : "var(--text-muted)",
+            fontSize: 11, whiteSpace: "nowrap", transition: "color 0.1s, background 0.1s",
+          }}
+          onMouseEnter={(event) => { event.currentTarget.style.color = "var(--text)"; }}
+          onMouseLeave={(event) => { event.currentTarget.style.color = terminalOpen ? "var(--text)" : "var(--text-muted)"; }}
+          data-mobile-toolbar-action={mobile ? "terminal" : undefined}
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: "var(--text-dim)", flexShrink: 0 }} aria-hidden="true">
+            <polyline points="4 17 10 11 4 5" />
+            <line x1="12" y1="19" x2="20" y2="19" />
+          </svg>
+          {!mobile && <span>{translate("terminal.label")}</span>}
+        </button>
         {mobile && renderThemeButton(true)}
         {mobile && renderLanguageButton(true)}
       </div>
@@ -1735,6 +1764,7 @@ export function AppShell() {
                 height: "100%",
               }}
             >
+
               <button
                 type="button"
                 onClick={handleMobileToolbarMoreToggle}
@@ -2097,6 +2127,7 @@ export function AppShell() {
               onSessionStatsPanelOpen={openSessionStatsPanel}
               onContextUsageChange={handleContextUsageChange}
               onOpenFile={handleOpenLinkedFile}
+              terminalOpen={terminalOpen}
               soundEnabled={soundEnabled}
               onSoundToggle={onSoundToggle}
               playDoneSound={playDoneSound}
