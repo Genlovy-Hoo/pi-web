@@ -97,11 +97,13 @@ export async function resolveProject(cwd: string): Promise<ProjectInfo> {
     const out = await git(cwd, [
       "rev-parse", "--path-format=absolute",
       "--git-common-dir", "--git-dir", "--show-toplevel",
-      "--abbrev-ref", "HEAD",
     ]);
-    const [commonDirRaw, gitDirRaw, toplevelRaw, ref] = out.split("\n").map((l) => l.trim());
-    // Only the first three lines are paths — `ref` is a branch name and must
-    // keep its forward slashes (`feature/foo`).
+    const [commonDirRaw, gitDirRaw, toplevelRaw] = out.split("\n").map((l) => l.trim());
+    // Unborn HEAD (empty repo, `git init` without any commit) makes
+    // `--abbrev-ref HEAD` fatal for the whole rev-parse above, which would
+    // misclassify a top-level empty repo as not-a-project. Read the branch
+    // separately and tolerate the failure (branch stays null).
+    const ref = await git(cwd, ["branch", "--show-current"]).catch(() => "");
     const [commonDir, gitDir, toplevel] = [commonDirRaw, gitDirRaw, toplevelRaw].map(toNativePath);
     // git prints resolved (symlink-free) paths; normalize cwd the same way
     const realCwd = realPathOrSelf(cwd);
