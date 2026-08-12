@@ -13,8 +13,12 @@ try {
 
 const nextConfig: NextConfig = {
   outputFileTracingRoot: configDir,
+  // ponytail: upstream lists `undici` here, but Turbopack turns it into a
+  // `require("undici-<hash>")` external that the packaged pi-web cannot
+  // resolve at runtime (pi-web failed to start with "Cannot find module
+  // undici-..."). Bundling it into the output instead keeps the packaged
+  // build self-contained. Re-add once Turbopack emits a resolvable id.
   serverExternalPackages: [
-    "undici",
     "@earendil-works/pi-coding-agent",
     "@earendil-works/pi-agent-core",
     "@earendil-works/pi-ai",
