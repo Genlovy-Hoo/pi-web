@@ -28,6 +28,8 @@ export function TerminalPanel({ cwd }: Props) {
   // Serialize keystroke POSTs — parallel writes to the pty stdin arrive out of
   // order and scramble the command (e.g. "echo x" → "echx").
   const inputQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const inputBufRef = useRef("");
+  const inputTimerRef = useRef<number | null>(null);
 
   // Drag the divider on top of the panel to resize its height.
   useEffect(() => {
@@ -96,15 +98,38 @@ export function TerminalPanel({ cwd }: Props) {
       term.focus();
 
       term.onData((data) => {
-        const id = sessionIdRef.current;
-        if (!id) return;
-        inputQueueRef.current = inputQueueRef.current
-          .then(() => fetch("/api/terminal/session", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ id, data }),
-          }))
-          .catch(() => {});
+        // Coalesce keystrokes into a ~30ms window, but NEVER merge a CR into
+        // the chunk: bash's readline leaves the line un-submitted when the
+        // trailing Enter arrives in the same write as the command text. A CR
+        // is flushed separately so readline sees it as a fresh accept-line.
+        const send = (chunk: string) => {
+          const id = sessionIdRef.current;
+          if (!id || !chunk) return;
+          inputQueueRef.current = inputQueueRef.current
+            .then(() => fetch("/api/terminal/session", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ id, data: chunk }),
+            }))
+            .catch(() => {});
+        };
+        const flushBuf = () => {
+          if (inputTimerRef.current !== null) {
+            window.clearTimeout(inputTimerRef.current);
+            inputTimerRef.current = null;
+          }
+          const chunk = inputBufRef.current;
+          inputBufRef.current = "";
+          send(chunk);
+        };
+        if (data === "\r") {
+          flushBuf();
+          send("\r");
+          return;
+        }
+        inputBufRef.current += data;
+        if (inputTimerRef.current !== null) window.clearTimeout(inputTimerRef.current);
+        inputTimerRef.current = window.setTimeout(flushBuf, 30);
       });
 
       // Open the SSE stream; first event carries the session id.
