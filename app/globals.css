@@ -127,6 +127,26 @@ body {
   border-radius: 2px;
 }
 
+/* xterm viewport is position:absolute; top/bottom:0 relative to .xterm.
+   Without an explicit height on .xterm, the viewport grows with scrollback
+   and the panel clips it — the scrollbar thumb looks tiny and wheel/drag
+   cannot reveal the rest of the output. */
+.pi-terminal-host,
+.pi-terminal-host .xterm {
+  width: 100%;
+  height: 100%;
+}
+.pi-terminal-host .xterm-viewport {
+  background-color: transparent !important;
+  /* Keep the gutter always, otherwise the first overflow shrinks cols,
+     FitAddon resizes the PTY mid-stream, and live output jumps. */
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
+}
+.pi-terminal-host .xterm-viewport::-webkit-scrollbar {
+  width: 8px;
+}
+
 .extension-status-shelf {
   display: flex;
   flex-shrink: 0;

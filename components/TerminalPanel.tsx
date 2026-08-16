@@ -57,6 +57,7 @@ export function TerminalPanel({ cwd }: Props) {
     teardown();
     const cancelled = { current: false };
     let themeObserver: MutationObserver | null = null;
+    let resizeObserver: ResizeObserver | null = null;
 
     void (async () => {
       // Wait for web fonts (Noto Sans Mono) before measuring — if xterm
@@ -74,6 +75,8 @@ export function TerminalPanel({ cwd }: Props) {
         lineHeight: 1.3,
         letterSpacing: 2,
         cursorBlink: true,
+        scrollback: 10000,
+        scrollOnUserInput: true,
       });
       // Terminal colors follow the pi-web theme (light/dark toggle adds the
       // `dark` class on <html>). CSS var() does not resolve inside canvas
@@ -92,8 +95,27 @@ export function TerminalPanel({ cwd }: Props) {
       fitRef.current = fit;
       term.loadAddon(fit);
       term.open(containerRef.current);
-      fit.fit();
+      // Fit after layout: opening xterm mutates the host; measuring in the
+      // same turn can report a collapsed box and lock the viewport height.
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      if (cancelled.current) return;
+      try { fit.fit(); } catch { /* ignore */ }
       term.focus();
+
+      // Follow live PTY output unless the user scrolled up to read history.
+      const followOutput = { current: true };
+      const viewport = term.element?.querySelector(".xterm-viewport") as HTMLElement | null;
+      const onViewportScroll = () => {
+        if (!viewport) return;
+        followOutput.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= 32;
+      };
+      viewport?.addEventListener("scroll", onViewportScroll, { passive: true });
+
+      const writeOutput = (data: Uint8Array) => {
+        term.write(data, () => {
+          if (followOutput.current) term.scrollToBottom();
+        });
+      };
 
       term.onData((data) => {
         const id = sessionIdRef.current;
@@ -136,20 +158,26 @@ export function TerminalPanel({ cwd }: Props) {
                 try {
                   const bin = atob(payload);
                   const arr = Uint8Array.from(bin, (c) => c.charCodeAt(0));
-                  term.write(arr);
+                  writeOutput(arr);
                 } catch { /* skip malformed chunk */ }
               }
             }
           }
         } catch {
           // aborted on teardown — expected
+        } finally {
+          viewport?.removeEventListener("scroll", onViewportScroll);
         }
       })();
 
-      // Keep the PTY size in sync with the panel.
+      // Keep the PTY size in sync with the panel. Debounce the ioctl so a
+      // scrollbar appearing mid-stream does not SIGWINCH the child every frame.
+      const host = containerRef.current;
+      let resizeTimer: ReturnType<typeof setTimeout> | undefined;
       const ro = new ResizeObserver(() => {
-        try {
-          fit.fit();
+        try { fit.fit(); } catch { /* ignore */ }
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
           const id = sessionIdRef.current;
           if (!id || !xtermRef.current) return;
           fetch("/api/terminal/session", {
@@ -157,12 +185,14 @@ export function TerminalPanel({ cwd }: Props) {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ id, cols: xtermRef.current.cols, rows: xtermRef.current.rows }),
           }).catch(() => {});
-        } catch { /* ignore */ }
+        }, 80);
       });
-      ro.observe(containerRef.current);
+      ro.observe(host);
+      resizeObserver = ro;
     })();
     return () => {
       cancelled.current = true;
+      resizeObserver?.disconnect();
       themeObserver?.disconnect();
       teardown();
     };
@@ -215,9 +245,10 @@ export function TerminalPanel({ cwd }: Props) {
           </button>
         </div>
 
-        {/* xterm container */}
+        {/* Chrome (border/padding) is separate from the xterm host so FitAddon
+            measures a box with a real height; padding on the host itself
+            collapses the viewport and breaks scroll. */}
         <div
-          ref={containerRef}
           style={{
             flex: 1,
             minHeight: 0,
@@ -227,7 +258,9 @@ export function TerminalPanel({ cwd }: Props) {
             borderRadius: 7,
             padding: "4px 0 0 6px",
           }}
-        />
+        >
+          <div ref={containerRef} className="pi-terminal-host" style={{ width: "100%", height: "100%" }} />
+        </div>
       </div>
     </div>
   );
