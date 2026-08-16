@@ -61,6 +61,14 @@ type AutoNameStatus =
 const TOP_BAR_ICON_BUTTON_SIZE = 36;
 const LANGUAGE_MENU_WIDTH = 176;
 
+// Stay on the current document path when clearing the session query.
+// router.replace("/") would set the iframe URL to "/" — same-origin with the
+// platform SPA — and the whole frame becomes the knowledge-base page.
+function clearSessionFromUrl() {
+  if (typeof window === "undefined") return;
+  window.history.replaceState(window.history.state, "", window.location.pathname || "/");
+}
+
 export function AppShell() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -551,8 +559,8 @@ export function AppShell() {
       // the default welcome page when none is remembered.
       restoreWorkspaceContext(newProject);
     }
-    router.replace("/", { scroll: false });
-  }, [activeCwd, invalidateWorkspaceRestore, newSessionCwd, router, selectedSession, restoreWorkspaceContext]);
+    clearSessionFromUrl();
+  }, [activeCwd, invalidateWorkspaceRestore, newSessionCwd, selectedSession, restoreWorkspaceContext]);
 
   const handleSelectSession = useCallback((session: SessionInfo, isRestore = false) => {
     invalidateWorkspaceRestore();
@@ -603,8 +611,8 @@ export function AppShell() {
     setSystemPromptLoading(false);
     setActiveTopPanel(null);
     if (isMobile) setSidebarOpen(false);
-    router.replace("/", { scroll: false });
-  }, [invalidateWorkspaceRestore, router, isMobile]);
+    clearSessionFromUrl();
+  }, [invalidateWorkspaceRestore, isMobile]);
 
   // Global keyboard shortcuts (handles Esc, Ctrl+Alt+N etc.)
   useGlobalKeyboardShortcuts({
@@ -782,9 +790,9 @@ export function AppShell() {
       setSystemPrompt(null);
       setSystemPromptLoading(false);
       setActiveTopPanel(null);
-      router.replace("/", { scroll: false });
+      clearSessionFromUrl();
     }
-  }, [invalidateWorkspaceRestore, selectedSession, router]);
+  }, [invalidateWorkspaceRestore, selectedSession]);
 
   const handleOpenFile = useCallback((
     filePath: string,
