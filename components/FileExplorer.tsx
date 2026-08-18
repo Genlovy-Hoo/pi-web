@@ -181,6 +181,31 @@ function uploadFiles(
   });
 }
 
+function isSkillWritebackDir(node: FileNode, cwd: string): boolean {
+  if (!node.isDir) return false;
+  const rel = normalizeFilePathSlashes(getRelativeFilePath(node.fullPath, cwd));
+  const parts = rel.split("/").filter(Boolean);
+  return parts.length === 2 && parts[0] === "skills";
+}
+
+function requestSkillWriteback(dir: string, t: Translate) {
+  if (window.parent === window) {
+    window.alert(t("files.skillWritebackNeedParent"));
+    return;
+  }
+  window.parent.postMessage({ type: "skill-writeback-request", dir }, window.location.origin);
+}
+
+function WritebackIcon({ size = 11 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 19V5" />
+      <path d="m6 11 6-6 6 6" />
+      <path d="M5 19h14" />
+    </svg>
+  );
+}
+
 function MentionIcon({ size = 11 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -359,7 +384,74 @@ function TreeNode({
             <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4" />
           </svg>
         )}
-        {onAtMention && hovered && (
+        {hovered && node.isDir && (isSkillWritebackDir(node, cwd) || onAtMention) && (
+          <div
+            style={{
+              position: "absolute",
+              right: 4,
+              top: "50%",
+              transform: "translateY(-50%)",
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {isSkillWritebackDir(node, cwd) && (
+              <button
+                type="button"
+                onClick={() => requestSkillWriteback(node.name, t)}
+                title={t("files.skillWriteback")}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 4,
+                  padding: "0 8px",
+                  height: 20,
+                  background: "var(--bg-panel)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 4,
+                  color: "var(--accent)",
+                  cursor: "pointer",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                <WritebackIcon />
+                {t("files.skillWriteback")}
+              </button>
+            )}
+            {onAtMention && (
+              <button
+                type="button"
+                onClick={() => onAtMention(getRelativeFilePath(node.fullPath, cwd), node.isDir)}
+                title={t("files.insertPath")}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 4,
+                  padding: "0 8px",
+                  height: 20,
+                  background: "var(--bg-panel)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 4,
+                  color: "var(--accent)",
+                  cursor: "pointer",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                <MentionIcon />
+                {t("files.mention")}
+              </button>
+            )}
+          </div>
+        )}
+        {onAtMention && hovered && !node.isDir && (
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -368,7 +460,7 @@ function TreeNode({
             title={t("files.insertPath")}
             style={{
               position: "absolute",
-              right: !node.isDir ? 28 : 4,
+              right: 28,
               top: "50%",
               transform: "translateY(-50%)",
               display: "flex",
@@ -667,6 +759,17 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   useEffect(() => {
     onUploadBusyChange?.(uploadBusy);
   }, [onUploadBusyChange, uploadBusy]);
+
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      if (event.source !== window.parent) return;
+      if (!event.data || event.data.type !== "skill-writeback-done") return;
+      setTreeRefreshKey((key) => key + 1);
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
 
   useEffect(() => () => onUploadBusyChange?.(false), [onUploadBusyChange]);
 

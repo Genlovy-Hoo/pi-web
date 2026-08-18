@@ -144,6 +144,8 @@ export const enLocale: LocalePlugin = {
     "files.containsChangedFiles": "Contains changed files",
     "files.insertPath": "Insert path into chat",
     "files.mention": "mention",
+    "files.skillWriteback": "Write back skill",
+    "files.skillWritebackNeedParent": "Open this from the platform chat page to write back a skill.",
     "files.download": "Download file",
     "files.dismissError": "Dismiss error",
     "files.addUploadedFile": "Add uploaded file to chat",

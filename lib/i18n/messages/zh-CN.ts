@@ -144,6 +144,8 @@ export const zhCNLocale: LocalePlugin = {
     "files.containsChangedFiles": "包含已更改文件",
     "files.insertPath": "将路径插入聊天",
     "files.mention": "提及",
+    "files.skillWriteback": "回写 skill",
+    "files.skillWritebackNeedParent": "请在平台聊天页操作回写 skill。",
     "files.download": "下载文件",
     "files.dismissError": "关闭错误",
     "files.addUploadedFile": "将上传的文件添加到聊天",
