@@ -1,6 +1,12 @@
 export const MOBILE_MAX_WIDTH = 640;
 export const SPLIT_PANEL_MIN_WIDTH = 960;
 
+export const CHAT_COLUMN_DEFAULT_WIDTH = 820;
+export const CHAT_COLUMN_MIN_WIDTH = 480;
+export const CHAT_COLUMN_MAX_WIDTH = 1800;
+export const CHAT_COLUMN_STORAGE_KEY = "pi-chat-column-width";
+export const CHAT_MINIMAP_WIDTH = 36;
+
 export const SIDEBAR_DEFAULT_WIDTH = 260;
 export const SIDEBAR_MIN_WIDTH = 180;
 export const SIDEBAR_MAX_WIDTH = 480;
@@ -34,6 +40,11 @@ export function getSidebarMaxWidth(options: {
   const chatWidth = compact ? COMPACT_CHAT_MIN_WIDTH : DESKTOP_CHAT_MIN_WIDTH;
   const visibleRightPanelWidth = !compact && rightPanelOpen ? rightPanelWidth : 0;
   return Math.min(SIDEBAR_MAX_WIDTH, viewportWidth - chatWidth - visibleRightPanelWidth);
+}
+
+export function getChatColumnMaxWidth(hostWidth: number, isMobile: boolean): number {
+  const reserved = isMobile ? 32 : 16 + CHAT_MINIMAP_WIDTH + 16;
+  return clampPanelWidth(hostWidth - reserved, CHAT_COLUMN_MIN_WIDTH, CHAT_COLUMN_MAX_WIDTH);
 }
 
 export function getRightPanelMaxWidth(options: {

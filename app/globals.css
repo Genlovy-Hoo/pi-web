@@ -1262,6 +1262,38 @@ span.token.table {
 .panel-resize-handle.is-resizing::after {
   background: color-mix(in srgb, var(--text-muted) 70%, var(--border));
 }
+.chat-column-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 30;
+  width: 12px;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+.chat-column-resize-handle-left {
+  left: -6px;
+}
+.chat-column-resize-handle-right {
+  right: -6px;
+}
+.chat-column-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  left: 5px;
+  width: 2px;
+  pointer-events: none;
+  background: transparent;
+  transition: background 0.12s ease;
+}
+.chat-column-resize-handle:hover::after,
+.chat-column-resize-handle:focus-visible::after,
+.chat-column-resize-handle.is-resizing::after {
+  background: color-mix(in srgb, var(--text-muted) 70%, var(--border));
+}
 .right-panel-overlay-backdrop {
   display: none;
 }
@@ -1414,6 +1446,7 @@ span.token.table {
     min-width: 0;
   }
   .panel-resize-handle,
+  .chat-column-resize-handle,
   .right-panel-overlay-backdrop {
     display: none;
   }

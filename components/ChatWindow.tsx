@@ -17,6 +17,8 @@ import { useI18n } from "@/hooks/useI18n";
 import { useAgentSession, type AgentPhase, type NoticeItem } from "@/hooks/useAgentSession";
 import { useDragDrop } from "@/hooks/useDragDrop";
 import { useIsMobile } from "@/hooks/useIsMobile";
+import { useResizableChatColumn } from "@/hooks/useResizableChatColumn";
+import { CHAT_MINIMAP_WIDTH, getChatColumnMaxWidth } from "@/lib/panel-layout";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 import type { AppUpdateResponse } from "@/lib/api-types";
 import {
@@ -73,7 +75,6 @@ function phaseLabel(phase: AgentPhase, t: (key: string, params?: Record<string, 
   return null;
 }
 
-const CHAT_MINIMAP_WIDTH = 36;
 const CHAT_COLUMN_PADDING = 16;
 
 function NewSessionUpdateLink({
@@ -258,6 +259,24 @@ function ProcessDetailsGroup({ messageCount, toolCallCount, defaultExpanded = fa
 export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemPromptLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onOpenFile, terminalOpen = false, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio }: Props) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
+  const chatHostRef = useRef<HTMLDivElement>(null);
+  const getChatColumnMax = useCallback(() => {
+    const hostWidth = chatHostRef.current?.clientWidth
+      ?? (typeof window === "undefined" ? 1200 : window.innerWidth);
+    return getChatColumnMaxWidth(hostWidth, isMobile);
+  }, [isMobile]);
+  const chatColumn = useResizableChatColumn({
+    ariaLabel: t("layout.resizeChatColumn"),
+    enabled: !isMobile,
+    getMaxWidth: getChatColumnMax,
+  });
+  useEffect(() => {
+    const host = chatHostRef.current;
+    if (!host || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => chatColumn.reclampWidth());
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, [chatColumn.reclampWidth]);
 
   // Wrap onAgentEnd to play the completion sound. This is more reliable than
   // wrapping handleAgentEventRef because useAgentSession overwrites that ref
@@ -427,6 +446,10 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
   }, [messages.length]);
 
   const isEmptyNew = isNew && messages.length === 0 && !streamState.isStreaming && !sessionBusy;
+  const [terminalFills, setTerminalFills] = useState(true);
+  useEffect(() => {
+    if (!terminalOpen) setTerminalFills(true);
+  }, [terminalOpen]);
   const hasStreamingContent = Boolean(streamState.streamingMessage?.content.length);
   const messageCwd = session?.cwd ?? newSessionCwd ?? undefined;
   const messageContentRef = useRef<HTMLDivElement | null>(null);
@@ -667,18 +690,42 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
         <NoticeShelf notices={notices} floating />
       </div>
 
+      <div ref={chatHostRef} className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+      <div className="relative flex min-h-0 min-w-0 flex-1">
+      <div
+        ref={chatColumn.columnRef}
+        className="relative mx-auto flex min-h-0 w-full min-w-0 flex-1 flex-col"
+        style={{
+          maxWidth: isMobile ? "100%" : "var(--chat-column-width, 820px)",
+          ["--chat-column-width" as string]: `${chatColumn.width}px`,
+        }}
+      >
+      {!isMobile && (
+        <>
+          <div
+            {...chatColumn.leftSeparatorProps}
+            className={`chat-column-resize-handle chat-column-resize-handle-left${chatColumn.isResizing ? " is-resizing" : ""}`}
+            title={`${t("layout.resizeChatColumn")}: ${t("layout.resizeHint")}`}
+          />
+          <div
+            {...chatColumn.rightSeparatorProps}
+            className={`chat-column-resize-handle chat-column-resize-handle-right${chatColumn.isResizing ? " is-resizing" : ""}`}
+            title={`${t("layout.resizeChatColumn")}: ${t("layout.resizeHint")}`}
+          />
+        </>
+      )}
       {isEmptyNew ? (
-        <div className="flex flex-1 flex-col items-center justify-center overflow-y-auto px-4 py-8">
-          <div className="w-full max-w-[820px]">
+        <div className={`flex min-h-0 w-full flex-1 flex-col ${terminalOpen ? "overflow-hidden px-4 pt-8" : "items-center justify-center overflow-y-auto px-4 py-8"}`}>
+          <div className={terminalOpen ? "flex min-h-0 w-full flex-1 flex-col" : "w-full"}>
             <div
-              className="mb-3"
+              className="mb-3 shrink-0"
               style={{
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "space-between",
                 gap: 12,
                 marginLeft: 16,
-                marginRight: isMobile ? 16 : 52,
+                marginRight: 16,
                 fontFamily: "var(--font-mono)",
               }}
             >
@@ -696,8 +743,11 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
                 </span>
               </div>
             </div>
+            {terminalOpen && !terminalFills && (
+              <div data-resize-spacer="" className="min-h-0 flex-1" aria-hidden />
+            )}
             {chatInputElement}
-            {terminalOpen && <TerminalPanel cwd={messageCwd} />}
+            {terminalOpen && <TerminalPanel cwd={messageCwd} onFillChange={setTerminalFills} />}
             <ExtensionStatusBar statuses={extensionStatuses} widgets={extensionWidgets} />
           </div>
         </div>
@@ -706,7 +756,7 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
       <div className="relative flex min-w-0 flex-1 overflow-hidden">
         <div ref={scrollContainerRef} className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto pt-4 [scrollbar-width:none]">
           <div style={{ minWidth: 0, padding: `0 ${CHAT_COLUMN_PADDING}px` }}>
-            <div ref={messageContentRef} style={{ width: "100%", minWidth: 0, maxWidth: 820, margin: "0 auto" }}>
+            <div ref={messageContentRef} style={{ width: "100%", minWidth: 0 }}>
             {(() => {
               let lastUserIdx = -1;
               for (let i = messages.length - 1; i >= 0; i--) {
@@ -927,15 +977,6 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
             </div>
           </div>
         </div>
-        {isMobile ? null : (
-          <ChatMinimap
-            messages={messages}
-            streamingMessage={streamState.streamingMessage}
-            scrollContainer={scrollContainerRef}
-            messageRefs={messageRefs}
-            onRevealHistory={revealHistoryForMinimap}
-          />
-        )}
       </div>
 
       <div className="relative">
@@ -945,6 +986,18 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
       </div>
       </>
       )}
+      </div>
+      {isMobile || isEmptyNew ? null : (
+        <ChatMinimap
+          messages={messages}
+          streamingMessage={streamState.streamingMessage}
+          scrollContainer={scrollContainerRef}
+          messageRefs={messageRefs}
+          onRevealHistory={revealHistoryForMinimap}
+        />
+      )}
+      </div>
+      </div>
     </div>
   );
 }

@@ -105,6 +105,11 @@ const MODEL_FILTER_THRESHOLD = 8;
 const MODEL_OPTION_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 const ANCHORED_MENU_GAP = 8;
 
+function applyChatInputHeight(ta: HTMLTextAreaElement) {
+  ta.style.height = "auto";
+  ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
+}
+
 export function getUpwardMenuMaxHeight(menuBottom: number, visibleTop: number, gap = ANCHORED_MENU_GAP): number {
   return Math.max(0, Math.floor(menuBottom - visibleTop - gap));
 }
@@ -462,8 +467,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       requestAnimationFrame(() => {
         if (!ta) return;
         ta.focus();
-        ta.style.height = "auto";
-        ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
+        applyChatInputHeight(ta);
       });
     },
     replaceMessage(message: UserMessage) {
@@ -485,8 +489,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       requestAnimationFrame(() => {
         if (!ta) return;
         ta.focus();
-        ta.style.height = "auto";
-        ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
+        applyChatInputHeight(ta);
       });
     },
     prependText(text: string) {
@@ -503,8 +506,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         if (!ta) return;
         ta.focus();
         ta.setSelectionRange(combined.length, combined.length);
-        ta.style.height = "auto";
-        ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
+        applyChatInputHeight(ta);
       });
     },
     rekeyDraft(previousKey: string, nextKey: string) {
@@ -599,8 +601,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         if (!ta) return;
         ta.focus();
         ta.setSelectionRange(ta.value.length, ta.value.length);
-        ta.style.height = "auto";
-        ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
+        applyChatInputHeight(ta);
       });
     },
     insertText(text: string) {
@@ -623,8 +624,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         const pos = start + sep.length + text.length;
         ta.setSelectionRange(pos, pos);
         ta.focus();
-        ta.style.height = "auto";
-        ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
+        applyChatInputHeight(ta);
       });
     },
     addImages(files: File[]) {
@@ -739,8 +739,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   useEffect(() => {
     const ta = textareaRef.current;
     if (!ta) return;
-    ta.style.height = "auto";
-    if (value) ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
+    applyChatInputHeight(ta);
   }, [value]);
 
   useEffect(() => {
@@ -914,8 +913,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       if (!el) return;
       el.focus();
       el.setSelectionRange(newPos, newPos);
-      el.style.height = "auto";
-      el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+      applyChatInputHeight(el);
     });
   }, [atQuery, value]);
 
@@ -959,8 +957,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       if (!ta) return;
       ta.focus();
       ta.setSelectionRange(text.length, text.length);
-      ta.style.height = "auto";
-      ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
+      applyChatInputHeight(ta);
     });
   }, []);
 
@@ -974,8 +971,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       if (!ta) return;
       ta.focus();
       ta.setSelectionRange(nextValue.length, nextValue.length);
-      ta.style.height = "auto";
-      ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
+      applyChatInputHeight(ta);
     });
   }, []);
 
@@ -1168,8 +1164,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const handleInput = useCallback(() => {
     const ta = textareaRef.current;
     if (!ta) return;
-    ta.style.height = "auto";
-    ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
+    applyChatInputHeight(ta);
   }, []);
 
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
@@ -1363,7 +1358,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         flexShrink: 0,
         background: "transparent",
         padding: "0 16px 8px",
-        paddingRight: isMobile ? 16 : 52, // desktop: 16px base + 36px for ChatMinimap alignment
       }}
     >
       {/* Hidden file input */}
@@ -1379,7 +1373,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           e.target.value = "";
         }}
       />
-      <div style={{ maxWidth: 820, margin: "0 auto" }}>
+      <div style={{ maxWidth: "100%", margin: "0 auto" }}>
         <ModelErrorBanner error={modelError} />
         <ModelScopeWarningBanner warnings={modelScopeWarnings} />
         {/* Queued steering / follow-up messages (delivered by pi on upcoming turns) */}

@@ -5,22 +5,46 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { useI18n } from "@/hooks/useI18n";
-import { useIsMobile } from "@/hooks/useIsMobile";
 
 interface Props {
   /** Current workspace directory the terminal runs in. */
   cwd: string | null | undefined;
+  /** Fires when the panel switches between fill-to-bottom and an explicit height. */
+  onFillChange?: (fill: boolean) => void;
 }
 
 // Real PTY terminal: xterm.js front-end talking to a python3 pty bridge
 // (spawned bash) via SSE + POST input. Interactive programs (pi, vim, top)
 // work because the shell has a real TTY.
-export function TerminalPanel({ cwd }: Props) {
+export function TerminalPanel({ cwd, onFillChange }: Props) {
   const { t } = useI18n();
-  const isMobile = useIsMobile();
-  const [height, setHeight] = useState(220);
-  const dragRef = useRef<{ startY: number; startH: number } | null>(null);
+  // null = fill the leftover space down to the page bottom.
+  const [height, setHeight] = useState<number | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{
+    pointerId: number;
+    startY: number;
+    startH: number;
+    maxH: number;
+    target: HTMLDivElement;
+  } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const MIN_HEIGHT = 120;
+
+  const measureMaxHeight = () => {
+    const root = rootRef.current;
+    const parent = root?.parentElement;
+    if (!root || !parent) return 220;
+    if (height === null) return Math.round(root.getBoundingClientRect().height);
+    let others = 0;
+    for (const child of Array.from(parent.children)) {
+      if (child === root) continue;
+      const el = child as HTMLElement;
+      if (el.dataset.resizeSpacer != null) continue;
+      others += el.offsetHeight;
+    }
+    return Math.max(MIN_HEIGHT, parent.clientHeight - others);
+  };
   const xtermRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const sessionIdRef = useRef<string | null>(null);
@@ -29,18 +53,24 @@ export function TerminalPanel({ cwd }: Props) {
   // order and scramble the command (e.g. "echo x" → "echx").
   const inputQueueRef = useRef<Promise<unknown>>(Promise.resolve());
 
-  // Drag the divider on top of the panel to resize its height.
   useEffect(() => {
-    const onMove = (e: MouseEvent) => {
-      const d = dragRef.current;
-      if (!d) return;
-      setHeight(Math.min(500, Math.max(80, d.startH + (d.startY - e.clientY))));
-    };
-    const onUp = () => { dragRef.current = null; document.body.style.cursor = ""; };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
-  }, []);
+    onFillChange?.(height === null);
+  }, [height, onFillChange]);
+
+  const finishResize = () => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    dragRef.current = null;
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    try {
+      if (drag.target.hasPointerCapture(drag.pointerId)) {
+        drag.target.releasePointerCapture(drag.pointerId);
+      }
+    } catch {
+      // capture may already be released
+    }
+  };
 
   const teardown = () => {
     abortRef.current?.abort();
@@ -49,6 +79,39 @@ export function TerminalPanel({ cwd }: Props) {
     xtermRef.current?.dispose();
     xtermRef.current = null;
     fitRef.current = null;
+  };
+
+  const fitSafely = () => {
+    const host = containerRef.current;
+    const fit = fitRef.current;
+    if (!fit || !host || host.clientHeight < 24 || host.clientWidth < 24) return;
+    try { fit.fit(); } catch { /* ignore */ }
+  };
+
+  const handleClear = () => {
+    const term = xtermRef.current;
+    if (!term) return;
+    // Do not call term.clear(): after a large scrollback it resets the
+    // viewport metrics, FitAddon can lock rows to 1, and the helper
+    // textarea (keyboard input) sits on a collapsed screen.
+    const id = sessionIdRef.current;
+    if (id) {
+      inputQueueRef.current = inputQueueRef.current
+        .then(() => fetch("/api/terminal/session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id, data: "\x0c" }),
+        }))
+        .catch(() => {});
+    } else {
+      term.write("\x1b[2J\x1b[H");
+    }
+    term.write("\x1b[3J", () => {
+      requestAnimationFrame(() => {
+        fitSafely();
+        term.focus();
+      });
+    });
   };
 
   // (Re)start the PTY session when the cwd changes or the panel mounts.
@@ -99,7 +162,7 @@ export function TerminalPanel({ cwd }: Props) {
       // same turn can report a collapsed box and lock the viewport height.
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       if (cancelled.current) return;
-      try { fit.fit(); } catch { /* ignore */ }
+      fitSafely();
       term.focus();
 
       // Follow live PTY output unless the user scrolled up to read history.
@@ -175,7 +238,7 @@ export function TerminalPanel({ cwd }: Props) {
       const host = containerRef.current;
       let resizeTimer: ReturnType<typeof setTimeout> | undefined;
       const ro = new ResizeObserver(() => {
-        try { fit.fit(); } catch { /* ignore */ }
+        fitSafely();
         clearTimeout(resizeTimer);
         resizeTimer = setTimeout(() => {
           const id = sessionIdRef.current;
@@ -199,33 +262,66 @@ export function TerminalPanel({ cwd }: Props) {
   }, [cwd]);
 
   return (
-    <div style={{
-      background: "var(--bg)",
-      // Same horizontal padding as ChatInput (16px + 36px ChatMinimap lane on
-      // desktop) so the terminal column lines up with the chat input above.
-      padding: "0 16px 8px",
-      paddingRight: isMobile ? 16 : 52,
-    }}>
+    <div
+      ref={rootRef}
+      style={{
+        background: "var(--bg)",
+        padding: "0 16px 8px",
+        flex: height === null ? "1 1 auto" : "0 0 auto",
+        height: height === null ? undefined : height,
+        minHeight: MIN_HEIGHT,
+        minWidth: 0,
+        width: "100%",
+        display: "flex",
+        flexDirection: "column",
+      }}
+    >
       <div style={{
-        maxWidth: 820,
+        maxWidth: "100%",
         margin: "0 auto",
         display: "flex",
         flexDirection: "column",
-        height,
+        flex: 1,
+        minHeight: 0,
+        width: "100%",
+        height: "100%",
       }}>
-        {/* Resize divider (drag up/down) */}
+        {/* Resize divider (drag up/down). Double-click restores fill-to-bottom. */}
         <div
-          onMouseDown={(e) => {
-            dragRef.current = { startY: e.clientY, startH: height };
-            document.body.style.cursor = "row-resize";
+          onPointerDown={(e) => {
+            if (e.pointerType === "mouse" && e.button !== 0) return;
             e.preventDefault();
+            e.stopPropagation();
+            const current = Math.round(rootRef.current?.getBoundingClientRect().height ?? 220);
+            const maxH = measureMaxHeight();
+            const target = e.currentTarget;
+            target.setPointerCapture(e.pointerId);
+            dragRef.current = {
+              pointerId: e.pointerId,
+              startY: e.clientY,
+              startH: current,
+              maxH,
+              target,
+            };
+            document.body.style.cursor = "row-resize";
+            document.body.style.userSelect = "none";
           }}
+          onPointerMove={(e) => {
+            const d = dragRef.current;
+            if (!d || d.pointerId !== e.pointerId) return;
+            e.preventDefault();
+            setHeight(Math.min(d.maxH, Math.max(MIN_HEIGHT, d.startH + (d.startY - e.clientY))));
+          }}
+          onPointerUp={finishResize}
+          onPointerCancel={finishResize}
+          onLostPointerCapture={finishResize}
+          onDoubleClick={() => setHeight(null)}
           onMouseEnter={(e) => { (e.currentTarget.firstElementChild as HTMLElement).style.background = "var(--accent)"; }}
           onMouseLeave={(e) => { (e.currentTarget.firstElementChild as HTMLElement).style.background = "var(--border)"; }}
           title={t("terminal.resize")}
-          style={{ height: 6, cursor: "row-resize", position: "relative", flexShrink: 0 }}
+          style={{ height: 12, cursor: "row-resize", position: "relative", flexShrink: 0, touchAction: "none", zIndex: 2 }}
         >
-          <div style={{ position: "absolute", left: 0, right: 0, top: 2, height: 2, background: "var(--border)", transition: "background 0.1s" }} />
+          <div style={{ position: "absolute", left: 0, right: 0, top: 5, height: 2, background: "var(--border)", transition: "background 0.1s" }} />
         </div>
         {/* Header: cwd + clear */}
         <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0 4px", fontSize: 10, color: "var(--text-dim)" }}>
@@ -237,7 +333,7 @@ export function TerminalPanel({ cwd }: Props) {
             {cwd ?? t("terminal.noCwd")}
           </span>
           <button
-            onClick={() => xtermRef.current?.clear()}
+            onClick={handleClear}
             title={t("terminal.clear")}
             style={{ marginLeft: "auto", background: "none", border: "none", cursor: "pointer", color: "var(--text-dim)", fontSize: 10 }}
           >
