@@ -638,3 +638,66 @@ export async function GET(
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
 }
+
+function isAllowedRootPath(target: string, allowedRoots: Set<string>): boolean {
+  for (const root of allowedRoots) {
+    try {
+      if (samePath(target, root) || samePath(fs.realpathSync(root), target)) {
+        return true;
+      }
+    } catch {
+      if (samePath(target, root)) return true;
+    }
+  }
+  return false;
+}
+
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ path: string[] }> }
+) {
+  if (!isApiRequestAllowed(request)) {
+    return NextResponse.json({ error: "Untrusted API request" }, { status: 403 });
+  }
+
+  try {
+    const { path: segments } = await params;
+    const filePath = filePathFromSegments(segments);
+    const allowedRoots = await getAllowedFileRoots();
+    if (!isFilePathAllowed(filePath, allowedRoots)) {
+      return NextResponse.json({ error: "Access denied" }, { status: 403 });
+    }
+
+    let lstat: fs.Stats;
+    try {
+      lstat = fs.lstatSync(filePath);
+    } catch {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+
+    if (lstat.isSymbolicLink()) {
+      fs.unlinkSync(filePath);
+      return NextResponse.json({ success: true });
+    }
+
+    if (!isExistingFilePathAllowed(filePath, allowedRoots)) {
+      return NextResponse.json({ error: "Access denied" }, { status: 403 });
+    }
+
+    const realTarget = fs.realpathSync(filePath);
+    if (isAllowedRootPath(realTarget, allowedRoots)) {
+      return NextResponse.json({ error: "Cannot delete workspace root" }, { status: 400 });
+    }
+
+    if (lstat.isDirectory()) {
+      fs.rmSync(filePath, { recursive: true, force: false });
+    } else if (lstat.isFile()) {
+      fs.unlinkSync(filePath);
+    } else {
+      return NextResponse.json({ error: "Unsupported file type" }, { status: 400 });
+    }
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
+  }
+}

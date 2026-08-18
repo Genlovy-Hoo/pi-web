@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, useState, useCallback, useEffect, useImperativeHandle, useMemo, useRef } from "react";
+import { forwardRef, useState, useCallback, useEffect, useImperativeHandle, useMemo, useRef, type CSSProperties } from "react";
 import { getFileIcon, FolderIcon } from "./FileIcons";
 import {
   encodeFilePathForApi,
@@ -10,6 +10,7 @@ import {
   joinFilePath,
   normalizeFilePathSlashes,
 } from "@/lib/file-paths";
+import { copyText } from "@/lib/clipboard";
 import type { GitFileStatus, GitFileStatusKind, GitStatusResponse } from "@/lib/git-types";
 import { useI18n } from "@/hooks/useI18n";
 type Translate = ReturnType<typeof useI18n>["t"];
@@ -96,6 +97,20 @@ async function fetchEntries(dirPath: string): Promise<FileNode[]> {
     children: e.isDir ? [] : undefined,
     loaded: !e.isDir,
   }));
+}
+
+async function deleteWorkspaceEntry(fullPath: string): Promise<void> {
+  const res = await fetch(`/api/files/${encodeFilePathForApi(fullPath)}`, { method: "DELETE" });
+  if (!res.ok) {
+    let message = `Failed to delete (HTTP ${res.status})`;
+    try {
+      const data = await res.json() as { error?: string };
+      if (data.error) message = data.error;
+    } catch {
+      // ignore non-JSON error bodies
+    }
+    throw new Error(message);
+  }
 }
 
 async function fetchGitStatus(cwd: string): Promise<GitStatusResponse> {
@@ -188,12 +203,41 @@ function isSkillWritebackDir(node: FileNode, cwd: string): boolean {
   return parts.length === 2 && parts[0] === "skills";
 }
 
+function isMaterialWritebackTarget(node: FileNode, cwd: string): boolean {
+  const rel = normalizeFilePathSlashes(getRelativeFilePath(node.fullPath, cwd));
+  const parts = rel.split("/").filter(Boolean);
+  if (parts.length === 0) return false;
+  if (parts[0] === "skills") return false;
+  if (parts.some((part) => part.startsWith("."))) return false;
+  if (parts.length === 2 && parts[0] === "materials" && parts[1].toLowerCase() === "index.md") {
+    return false;
+  }
+  if (!node.isDir) return true;
+  return parts.length === 2 && parts[0] === "materials";
+}
+
 function requestSkillWriteback(dir: string, t: Translate) {
   if (window.parent === window) {
     window.alert(t("files.skillWritebackNeedParent"));
     return;
   }
   window.parent.postMessage({ type: "skill-writeback-request", dir }, window.location.origin);
+}
+
+function requestMaterialWriteback(path: string, t: Translate) {
+  if (window.parent === window) {
+    window.alert(t("files.materialWritebackNeedParent"));
+    return;
+  }
+  window.parent.postMessage({ type: "material-writeback-request", path }, window.location.origin);
+}
+
+function relativeWorkPath(fullPath: string, cwd: string): string {
+  const normalizedFile = normalizeFilePathSlashes(fullPath).replace(/\/$/, "");
+  const normalizedCwd = normalizeFilePathSlashes(cwd).replace(/\/$/, "");
+  if (!normalizedCwd || normalizedFile === normalizedCwd) return ".";
+  const rel = normalizeFilePathSlashes(getRelativeFilePath(fullPath, cwd));
+  return rel || ".";
 }
 
 function WritebackIcon({ size = 11 }: { size?: number }) {
@@ -214,6 +258,50 @@ function MentionIcon({ size = 11 }: { size?: number }) {
     </svg>
   );
 }
+
+function CopyPathIcon({ size = 11 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="9" y="9" width="13" height="13" rx="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
+}
+
+function CopiedIcon({ size = 11 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}
+
+function DeleteIcon({ size = 11 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 6h18" />
+      <path d="M8 6V4h8v2" />
+      <path d="M19 6l-1 14H6L5 6" />
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+    </svg>
+  );
+}
+
+const treeIconBtnStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  width: 20,
+  height: 20,
+  padding: 0,
+  background: "var(--bg-panel)",
+  border: "1px solid var(--border)",
+  borderRadius: 4,
+  color: "var(--accent)",
+  cursor: "pointer",
+  flexShrink: 0,
+};
 
 function DismissButton({ onClick, title }: { onClick: () => void; title: string }) {
   return (
@@ -246,6 +334,7 @@ function TreeNode({
   highlightedPaths,
   gitStatusByPath,
   changedDirectoryPaths,
+  onTreeChanged,
   t,
 }: {
   node: FileNode;
@@ -259,6 +348,7 @@ function TreeNode({
   highlightedPaths: Set<string>;
   gitStatusByPath: Map<string, GitFileStatus>;
   changedDirectoryPaths: Set<string>;
+  onTreeChanged: () => void;
   t: Translate;
 }) {
   const open = expandedPaths.has(node.fullPath);
@@ -272,6 +362,32 @@ function TreeNode({
   const [loaded, setLoaded] = useState(node.loaded ?? false);
   const [loading, setLoading] = useState(false);
   const [hovered, setHovered] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const copiedTimerRef = useRef<number | undefined>(undefined);
+
+  const copyRelativePath = useCallback(() => {
+    const rel = relativeWorkPath(node.fullPath, cwd);
+    void copyText(rel).then(() => {
+      setCopied(true);
+      window.clearTimeout(copiedTimerRef.current);
+      copiedTimerRef.current = window.setTimeout(() => setCopied(false), 1500);
+    });
+  }, [cwd, node.fullPath]);
+
+  const deleteEntry = useCallback(async () => {
+    const message = node.isDir
+      ? t("files.deleteDirConfirm", { name: node.name })
+      : t("files.deleteFileConfirm", { name: node.name });
+    if (!window.confirm(message)) return;
+    try {
+      await deleteWorkspaceEntry(node.fullPath);
+      onTreeChanged();
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : t("files.deleteFailed"));
+    }
+  }, [node.fullPath, node.isDir, node.name, onTreeChanged, t]);
+
+  useEffect(() => () => window.clearTimeout(copiedTimerRef.current), []);
 
   const loadChildren = useCallback(async (force = false) => {
     if (loaded && !force) return;
@@ -384,7 +500,7 @@ function TreeNode({
             <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4" />
           </svg>
         )}
-        {hovered && node.isDir && (isSkillWritebackDir(node, cwd) || onAtMention) && (
+        {hovered && (
           <div
             style={{
               position: "absolute",
@@ -397,30 +513,44 @@ function TreeNode({
             }}
             onClick={(e) => e.stopPropagation()}
           >
+            <button
+              type="button"
+              onClick={() => { void deleteEntry(); }}
+              title={t("files.delete")}
+              aria-label={t("files.delete")}
+              style={{ ...treeIconBtnStyle, color: "#f87171" }}
+            >
+              <DeleteIcon />
+            </button>
+            <button
+              type="button"
+              onClick={copyRelativePath}
+              title={copied ? t("files.copiedRelativePath") : t("files.copyRelativePath")}
+              aria-label={copied ? t("files.copiedRelativePath") : t("files.copyRelativePath")}
+              style={treeIconBtnStyle}
+            >
+              {copied ? <CopiedIcon /> : <CopyPathIcon />}
+            </button>
             {isSkillWritebackDir(node, cwd) && (
               <button
                 type="button"
                 onClick={() => requestSkillWriteback(node.name, t)}
                 title={t("files.skillWriteback")}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 4,
-                  padding: "0 8px",
-                  height: 20,
-                  background: "var(--bg-panel)",
-                  border: "1px solid var(--border)",
-                  borderRadius: 4,
-                  color: "var(--accent)",
-                  cursor: "pointer",
-                  fontSize: 11,
-                  fontWeight: 600,
-                  whiteSpace: "nowrap",
-                }}
+                aria-label={t("files.skillWriteback")}
+                style={treeIconBtnStyle}
               >
                 <WritebackIcon />
-                {t("files.skillWriteback")}
+              </button>
+            )}
+            {isMaterialWritebackTarget(node, cwd) && (
+              <button
+                type="button"
+                onClick={() => requestMaterialWriteback(getRelativeFilePath(node.fullPath, cwd), t)}
+                title={t("files.materialWriteback")}
+                aria-label={t("files.materialWriteback")}
+                style={treeIconBtnStyle}
+              >
+                <WritebackIcon />
               </button>
             )}
             {onAtMention && (
@@ -428,95 +558,29 @@ function TreeNode({
                 type="button"
                 onClick={() => onAtMention(getRelativeFilePath(node.fullPath, cwd), node.isDir)}
                 title={t("files.insertPath")}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 4,
-                  padding: "0 8px",
-                  height: 20,
-                  background: "var(--bg-panel)",
-                  border: "1px solid var(--border)",
-                  borderRadius: 4,
-                  color: "var(--accent)",
-                  cursor: "pointer",
-                  fontSize: 11,
-                  fontWeight: 600,
-                  whiteSpace: "nowrap",
-                }}
+                aria-label={t("files.insertPath")}
+                style={treeIconBtnStyle}
               >
                 <MentionIcon />
-                {t("files.mention")}
               </button>
             )}
+            {!node.isDir && (
+              <a
+                href={`/api/files/${encodeFilePathForApi(node.fullPath)}?type=download`}
+                download
+                onClick={(e) => e.stopPropagation()}
+                title={t("files.download")}
+                aria-label={t("files.download")}
+                style={{ ...treeIconBtnStyle, color: "var(--text-muted)", textDecoration: "none" }}
+              >
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+              </a>
+            )}
           </div>
-        )}
-        {onAtMention && hovered && !node.isDir && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onAtMention(getRelativeFilePath(node.fullPath, cwd), node.isDir);
-            }}
-            title={t("files.insertPath")}
-            style={{
-              position: "absolute",
-              right: 28,
-              top: "50%",
-              transform: "translateY(-50%)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 4,
-              padding: "0 8px",
-              height: 20,
-              background: "var(--bg-panel)",
-              border: "1px solid var(--border)",
-              borderRadius: 4,
-              color: "var(--accent)",
-              cursor: "pointer",
-              fontSize: 11,
-              fontWeight: 600,
-              whiteSpace: "nowrap",
-            }}
-          >
-            <MentionIcon />
-            {t("files.mention")}
-          </button>
-        )}
-        {hovered && !node.isDir && (
-          <a
-            href={`/api/files/${encodeFilePathForApi(node.fullPath)}?type=download`}
-            download
-            onClick={(e) => e.stopPropagation()}
-            title={t("files.download")}
-            style={{
-              position: "absolute",
-              right: 4,
-              top: "50%",
-              transform: "translateY(-50%)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 4,
-              padding: "0 5px",
-              height: 20,
-              background: "var(--bg-panel)",
-              border: "1px solid var(--border)",
-              borderRadius: 4,
-              color: "var(--text-muted)",
-              cursor: "pointer",
-              fontSize: 11,
-              fontWeight: 600,
-              whiteSpace: "nowrap",
-              textDecoration: "none",
-            }}
-          >
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-              <polyline points="7 10 12 15 17 10" />
-              <line x1="12" y1="15" x2="12" y2="3" />
-            </svg>
-          </a>
         )}
       </div>
       {node.isDir && open && (
@@ -535,6 +599,7 @@ function TreeNode({
               highlightedPaths={highlightedPaths}
               gitStatusByPath={gitStatusByPath}
               changedDirectoryPaths={changedDirectoryPaths}
+              onTreeChanged={onTreeChanged}
               t={t}
             />
           ))}
@@ -663,6 +728,10 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     });
   }, []);
 
+  const handleTreeChanged = useCallback(() => {
+    setTreeRefreshKey((key) => key + 1);
+  }, []);
+
   const applyUploadResult = useCallback((data: UploadResponse) => {
     const uploaded = data.uploaded ?? [];
     const skipped = data.skipped ?? [];
@@ -764,7 +833,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     const onMessage = (event: MessageEvent) => {
       if (event.origin !== window.location.origin) return;
       if (event.source !== window.parent) return;
-      if (!event.data || event.data.type !== "skill-writeback-done") return;
+      if (!event.data || (event.data.type !== "skill-writeback-done" && event.data.type !== "material-writeback-done")) return;
       setTreeRefreshKey((key) => key + 1);
     };
     window.addEventListener("message", onMessage);
@@ -927,10 +996,9 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
                   onClick={addUploadedFilesToChat}
                   title={uploadSummary.uploaded.length === 1 ? t("files.addUploadedFile") : t("files.addAllUploadedFiles")}
                   aria-label={uploadSummary.uploaded.length === 1 ? t("files.addUploadedFile") : t("files.addAllUploadedFiles")}
-                  style={{ height: 22, padding: "0 7px", display: "flex", alignItems: "center", justifyContent: "center", gap: 4, flexShrink: 0, border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-panel)", color: "var(--accent)", cursor: "pointer", fontSize: 11, fontWeight: 600, whiteSpace: "nowrap" }}
+                  style={treeIconBtnStyle}
                 >
                   <MentionIcon />
-                  {t("files.mention")}
                 </button>
               )}
               <DismissButton onClick={() => setUploadSummary(null)} title={t("files.dismissUploadResults")} />
@@ -993,6 +1061,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
                 highlightedPaths={highlightedPaths}
                 gitStatusByPath={gitStatusByPath}
                 changedDirectoryPaths={changedDirectoryPaths}
+                onTreeChanged={handleTreeChanged}
                 t={t}
               />
             ))
