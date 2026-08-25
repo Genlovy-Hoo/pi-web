@@ -155,6 +155,8 @@ export const enLocale: LocalePlugin = {
     "files.skillWritebackNeedParent": "Open this from the platform chat page to write back a skill.",
     "files.materialWriteback": "Write back material",
     "files.materialWritebackNeedParent": "Open this from the platform chat page to write back a material.",
+    "files.systemPromptWriteback": "Write back system prompt",
+    "files.systemPromptWritebackNeedParent": "Open this from the platform chat page to write back the system prompt.",
     "files.download": "Download file",
     "files.dismissError": "Dismiss error",
     "files.addUploadedFile": "Add uploaded file to chat",

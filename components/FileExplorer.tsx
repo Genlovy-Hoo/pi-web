@@ -203,17 +203,23 @@ function isSkillWritebackDir(node: FileNode, cwd: string): boolean {
   return parts.length === 2 && parts[0] === "skills";
 }
 
-function isMaterialWritebackTarget(node: FileNode, cwd: string): boolean {
+function isSystemPromptWritebackTarget(node: FileNode, cwd: string): boolean {
+  if (node.isDir) return false;
   const rel = normalizeFilePathSlashes(getRelativeFilePath(node.fullPath, cwd));
   const parts = rel.split("/").filter(Boolean);
-  if (parts.length === 0) return false;
-  if (parts[0] === "skills") return false;
+  return parts.length === 1 && parts[0] === "SYSTEM.md";
+}
+
+function isMaterialWritebackTarget(node: FileNode, cwd: string): boolean {
+  if (node.isDir || isSystemPromptWritebackTarget(node, cwd)) return false;
+  const rel = normalizeFilePathSlashes(getRelativeFilePath(node.fullPath, cwd));
+  const parts = rel.split("/").filter(Boolean);
+  if (parts.length === 0 || parts[0] === "skills") return false;
   if (parts.some((part) => part.startsWith("."))) return false;
   if (parts.length === 2 && parts[0] === "materials" && parts[1].toLowerCase() === "index.md") {
     return false;
   }
-  if (!node.isDir) return true;
-  return parts.length === 2 && parts[0] === "materials";
+  return true;
 }
 
 function requestSkillWriteback(dir: string, t: Translate) {
@@ -222,6 +228,14 @@ function requestSkillWriteback(dir: string, t: Translate) {
     return;
   }
   window.parent.postMessage({ type: "skill-writeback-request", dir }, window.location.origin);
+}
+
+function requestSystemPromptWriteback(t: Translate) {
+  if (window.parent === window) {
+    window.alert(t("files.systemPromptWritebackNeedParent"));
+    return;
+  }
+  window.parent.postMessage({ type: "system-prompt-writeback-request" }, window.location.origin);
 }
 
 function requestMaterialWriteback(path: string, t: Translate) {
@@ -542,6 +556,17 @@ function TreeNode({
                 <WritebackIcon />
               </button>
             )}
+            {isSystemPromptWritebackTarget(node, cwd) && (
+              <button
+                type="button"
+                onClick={() => requestSystemPromptWriteback(t)}
+                title={t("files.systemPromptWriteback")}
+                aria-label={t("files.systemPromptWriteback")}
+                style={treeIconBtnStyle}
+              >
+                <WritebackIcon />
+              </button>
+            )}
             {isMaterialWritebackTarget(node, cwd) && (
               <button
                 type="button"
@@ -833,7 +858,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     const onMessage = (event: MessageEvent) => {
       if (event.origin !== window.location.origin) return;
       if (event.source !== window.parent) return;
-      if (!event.data || (event.data.type !== "skill-writeback-done" && event.data.type !== "material-writeback-done")) return;
+      if (!event.data || (event.data.type !== "skill-writeback-done" && event.data.type !== "material-writeback-done" && event.data.type !== "system-prompt-writeback-done")) return;
       setTreeRefreshKey((key) => key + 1);
     };
     window.addEventListener("message", onMessage);

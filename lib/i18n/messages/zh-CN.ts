@@ -155,6 +155,8 @@ export const zhCNLocale: LocalePlugin = {
     "files.skillWritebackNeedParent": "请在平台聊天页操作回写 skill。",
     "files.materialWriteback": "回写资料",
     "files.materialWritebackNeedParent": "请在平台聊天页操作回写资料。",
+    "files.systemPromptWriteback": "回写系统提示词",
+    "files.systemPromptWritebackNeedParent": "请在平台聊天页操作回写系统提示词。",
     "files.download": "下载文件",
     "files.dismissError": "关闭错误",
     "files.addUploadedFile": "将上传的文件添加到聊天",
