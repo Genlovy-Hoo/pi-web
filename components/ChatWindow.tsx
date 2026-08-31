@@ -1,8 +1,8 @@
 "use client";
 import { registerAbortHandler } from "@/hooks/useKeyboardShortcuts";
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { AgentMessage, AssistantContentBlock, AssistantMessage, BashExecutionMessage, BlockingExtensionUiRequest, CustomMessage, ExtensionUiRequest, SessionInfo, SessionTreeNode, ToolResultMessage, UserMessage } from "@/lib/types";
-import { normalizeCustomPanelLines, parseAnsiLine } from "@/lib/ansi";
+import { normalizeCustomPanelLines } from "@/lib/ansi";
 import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
 import { countToolCallBlocks, getAssistantErrorMessage, getDisplayableAssistantBlocks, splitFinalAssistantBlocks } from "@/lib/message-display";
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
@@ -13,6 +13,7 @@ import dynamic from "next/dynamic";
 const TerminalPanel = dynamic(() => import("./TerminalPanel").then((m) => m.TerminalPanel), { ssr: false });
 import { ChatMinimap, useMessageRefs } from "./ChatMinimap";
 import { ExtensionStatusBar } from "./ExtensionStatusBar";
+import { AnsiText } from "./AnsiText";
 import { useI18n } from "@/hooks/useI18n";
 import { useAgentSession, type AgentPhase, type NoticeItem } from "@/hooks/useAgentSession";
 import { useDragDrop } from "@/hooks/useDragDrop";
@@ -21,9 +22,9 @@ import { useResizableChatColumn } from "@/hooks/useResizableChatColumn";
 import { CHAT_MINIMAP_WIDTH, getChatColumnMaxWidth } from "@/lib/panel-layout";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 import type { AppUpdateResponse } from "@/lib/api-types";
+import type { ToolEntry } from "@/lib/tool-presets";
 import {
   captureScrollDistance,
-  getNextVisibleCount,
   getPromptAnchorSpacerHeight,
   getVisibleRenderWindow,
   restoreScrollTop,
@@ -43,11 +44,13 @@ interface Props {
   chatInputRef?: React.RefObject<ChatInputHandle | null>;
   onBranchDataChange?: (tree: SessionTreeNode[], activeLeafId: string | null, onLeafChange: (leafId: string | null) => void) => void;
   onSystemPromptChange?: (prompt: string | null) => void;
-  onSystemPromptLoaderChange?: (loader: (() => Promise<void>) | null) => void;
+  onSystemToolsChange?: (tools: ToolEntry[] | null) => void;
+  onSystemInfoLoaderChange?: (loader: (() => Promise<void>) | null) => void;
   onSessionStatsChange?: (stats: SessionStatsInfo | null) => void;
   onSessionStatsPanelOpen?: () => void;
   onContextUsageChange?: (usage: { percent: number | null; contextWindow: number; tokens: number | null } | null) => void;
   onOpenFile?: (filePath: string) => void;
+  onOpenSession?: (sessionId: string) => void;
   /** Show the PTY terminal panel below the chat input. */
   terminalOpen?: boolean;
   /** Completion sound state + controls, owned by AppShell so tasks finishing in
@@ -256,7 +259,7 @@ function ProcessDetailsGroup({ messageCount, toolCallCount, defaultExpanded = fa
   );
 }
 
-export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemPromptLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onOpenFile, terminalOpen = false, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio }: Props) {
+export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onOpenFile, onOpenSession, terminalOpen = false, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio }: Props) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
   const chatHostRef = useRef<HTMLDivElement>(null);
@@ -277,6 +280,7 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
     observer.observe(host);
     return () => observer.disconnect();
   }, [chatColumn.reclampWidth]);
+  const completionNotificationsEnabled = session?.relation?.kind !== "subagent";
 
   // Wrap onAgentEnd to play the completion sound. This is more reliable than
   // wrapping handleAgentEventRef because useAgentSession overwrites that ref
@@ -288,11 +292,11 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
   soundEnabledRef.current = soundEnabled;
   const soundedExtensionDialogIdRef = useRef<string | null>(null);
   const wrappedOnAgentEnd = useCallback(() => {
-    if (soundEnabledRef.current) {
+    if (completionNotificationsEnabled && soundEnabledRef.current) {
       playDoneSoundRef.current();
     }
     onAgentEnd?.();
-  }, [onAgentEnd]);
+  }, [completionNotificationsEnabled, onAgentEnd]);
 
   // 稳定化 onEditContent 引用，配合 React.memo 防止历史消息重渲染
   const handleEditContent = useCallback((message: UserMessage) => {
@@ -300,12 +304,12 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
   }, [chatInputRef]);
 
   const {
-    loading, error, messages, entryIds, streamState,
+    loading, error, messages, entryIds, historyCursor, hasEarlierMessages, streamState,
     agentRunning, bashRunning, pendingBash, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, toolPreset, thinkingLevel,
     retryInfo, contextUsage, forkingEntryId,
     isCompacting, compactError, compactResult, displayModel: displayModelValue, modelSwitching, sessionStats,
     slashCommands, slashCommandsLoading, queuedMessages,
-    notices, extensionDialog, extensionCustomUi, extensionStatuses, extensionWidgets, respondToExtensionUi, sendExtensionCustomInput,
+    notices, extensionDialog, extensionCustomUi, extensionStatuses, extensionWidgets, respondToExtensionUi, sendExtensionCustomInput, setNoticePaused,
     isAutoModelSelection,
     agentPhase,
     isNew,
@@ -316,17 +320,22 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
     handleRecallQueue,
     handleBuiltinSlashCommand,
     handleToolPresetChange, handleThinkingLevelChange, loadSlashCommands, scrollUserMsgToTop,
+    loadContext, activeLeafId,
   } = useAgentSession({
     session, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd: wrappedOnAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked,
-    modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemPromptLoaderChange, onSessionStatsPanelOpen,
+    modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsPanelOpen,
   });
   const sessionBusy = agentRunning || bashRunning;
 
   useEffect(() => {
-    if (!extensionDialog || soundedExtensionDialogIdRef.current === extensionDialog.id) return;
+    if (
+      !completionNotificationsEnabled
+      || !extensionDialog
+      || soundedExtensionDialogIdRef.current === extensionDialog.id
+    ) return;
     soundedExtensionDialogIdRef.current = extensionDialog.id;
     playDoneSoundRef.current();
-  }, [extensionDialog]);
+  }, [completionNotificationsEnabled, extensionDialog]);
 
   // Register the abort handler for the global Esc shortcut
   useEffect(() => {
@@ -339,7 +348,7 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
   const [visibleCount, setVisibleCount] = useState(VISIBLE_PAGE_SIZE);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const prevScrollDistanceRef = useRef<number | null>(null);
-
+  const loadingOlderRef = useRef(false);
   // IntersectionObserver on the sentinel div at the top of the message list.
   // When it becomes visible, load the next page of older messages.
   useEffect(() => {
@@ -348,17 +357,33 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
     if (!sentinel || !container) return;
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0]?.isIntersecting) {
-          // Save distance from top before prepending to restore scroll later
-          prevScrollDistanceRef.current = captureScrollDistance(container.scrollHeight, container.scrollTop);
-          setVisibleCount((prev) => getNextVisibleCount(prev));
-        }
+        if (!entries[0]?.isIntersecting) return;
+        // No older history loaded yet: fetch the previous page from the server
+        // and prepend it (loadContext handles prepend + scroll anchoring).
+        // Skip while a page is already loading or nothing older exists.
+        if (loadingOlderRef.current) return;
+        if (!hasEarlierMessages) return;
+        const oldestId = historyCursor;
+        if (!oldestId) return;
+        const sid = session?.id ?? sessionIdRef.current;
+        if (!sid) return;
+        loadingOlderRef.current = true;
+        prevScrollDistanceRef.current = captureScrollDistance(container.scrollHeight, container.scrollTop);
+        void loadContext(sid, activeLeafId, oldestId).finally(() => {
+          loadingOlderRef.current = false;
+        });
       },
       { root: container, threshold: 0 }
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [visibleCount, messages.length, scrollContainerRef]);
+  }, [historyCursor, hasEarlierMessages, session, activeLeafId, loadContext, sessionIdRef, scrollContainerRef]);
+
+  // Keep the rendered window at least as large as what's loaded, so prepended
+  // (older) pages stay visible instead of being sliced off the top.
+  useEffect(() => {
+    setVisibleCount((current) => Math.max(current, messages.length));
+  }, [messages.length]);
 
   // After visibleCount increases (more messages prepended), restore the
   // scroll position so the viewport doesn't jump.
@@ -682,12 +707,13 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
           right: isMobile ? 0 : CHAT_MINIMAP_WIDTH,
           zIndex: 40,
           display: "flex",
-          justifyContent: "center",
+          // Toasts live in the top-right corner
+          justifyContent: "flex-end",
           padding: `0 ${CHAT_COLUMN_PADDING}px`,
           pointerEvents: "none",
         }}
       >
-        <NoticeShelf notices={notices} floating />
+        <NoticeShelf notices={notices} floating onPauseChange={setNoticePaused} />
       </div>
 
       <div ref={chatHostRef} className="relative flex min-h-0 min-w-0 flex-1 flex-col">
@@ -816,6 +842,7 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
                     modelNames={modelNames}
                     cwd={messageCwd}
                     onOpenFile={onOpenFile}
+                    onOpenSession={onOpenSession}
                     entryId={entryIds[idx]}
                     onFork={sessionBusy || isNew || (idx === 0 && msg.role === "user") ? undefined : handleFork}
                     forking={forkingEntryId === entryIds[idx]}
@@ -931,12 +958,13 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
                 }
                 idx = endIdx;
               }
-              const { startIndex, hasMore } = getVisibleRenderWindow(rendered.length, visibleCount);
+              const { startIndex } = getVisibleRenderWindow(rendered.length, visibleCount);
+              const hasMore = startIndex > 0 || hasEarlierMessages;
               return (
                 <>
                   {hasMore && (
                      <div ref={sentinelRef} className="py-3 text-center text-xs text-text-muted">
-                       {t("chat.loadEarlier", { count: startIndex })}
+                       {t("chat.loadEarlier")}
                     </div>
                   )}
                   {rendered.slice(startIndex)}
@@ -944,7 +972,7 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
               );
             })()}
             {streamState.isStreaming && hasStreamingContent && streamState.streamingMessage && (
-              <MessageView message={streamState.streamingMessage as AgentMessage} isStreaming modelNames={modelNames} cwd={messageCwd} onOpenFile={onOpenFile} />
+              <MessageView message={streamState.streamingMessage as AgentMessage} isStreaming modelNames={modelNames} cwd={messageCwd} onOpenFile={onOpenFile} onOpenSession={onOpenSession} />
             )}
 
             {agentRunning && !hasStreamingContent && agentPhase && (
@@ -968,6 +996,7 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
                   excludeFromContext: pendingBash.excludeFromContext,
                 } as BashExecutionMessage}
                 sessionId={session?.id ?? sessionIdRef.current ?? undefined}
+                onOpenSession={onOpenSession}
               />
             )}
 
@@ -1002,14 +1031,19 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
   );
 }
 
-function NoticeShelf({ notices, floating = false }: { notices: NoticeItem[]; floating?: boolean }) {
+// Toast 整体高度上限；文本区高度上限 = 整体上限 - 上下 padding(14*2) - 上下边框(1*2)
+const NOTICE_MAX_HEIGHT_PX = 500;
+const NOTICE_TEXT_MAX_HEIGHT_PX = NOTICE_MAX_HEIGHT_PX - 30;
+
+function NoticeShelf({ notices, floating = false, onPauseChange }: { notices: NoticeItem[]; floating?: boolean; onPauseChange?: (id: string | null) => void }) {
   if (notices.length === 0) return null;
   return (
     <div
       style={{
         display: "flex",
         flexDirection: "column",
-        alignItems: "center",
+        // Right-anchored: every toast's right edge aligns here, widths extend leftward
+        alignItems: "flex-end",
         marginBottom: floating ? 0 : 10,
       }}
     >
@@ -1025,13 +1059,27 @@ function NoticeShelf({ notices, floating = false }: { notices: NoticeItem[]; flo
           <div
             key={notice.id}
             className="notice-shelf-item"
+            onMouseEnter={() => onPauseChange?.(notice.id)}
+            onMouseLeave={(event) => {
+              if (!event.currentTarget.contains(document.activeElement)) onPauseChange?.(null);
+            }}
+            onFocus={() => onPauseChange?.(notice.id)}
+            onBlur={(event) => {
+              if (!event.currentTarget.matches(":hover")) onPauseChange?.(null);
+            }}
             style={{
               display: "flex",
-              alignItems: "center",
+              // Top-align children so the type dot sits by the first line on multi-line toasts
+              alignItems: "flex-start",
               gap: 10,
               minHeight: 60,
-              height: 60,
-              maxHeight: 60,
+              height: "auto",
+              // 整体高度上限：超出后由文本区内部滚动承担（见下方 span 的 overflowY），
+              // 容器自身保持 hidden，小圆点固定在顶部不随文本滚动
+              maxHeight: NOTICE_MAX_HEIGHT_PX,
+              // The floating wrapper is pointerEvents:"none" (click-through by design),
+              // so the toast itself must opt back into interactivity or hover events never reach it
+              pointerEvents: "auto",
               marginBottom: index === notices.length - 1 ? 0 : 6,
               overflow: "hidden",
               borderRadius: 14,
@@ -1043,12 +1091,15 @@ function NoticeShelf({ notices, floating = false }: { notices: NoticeItem[]; flo
               boxShadow: floating
                 ? "0 1px 2px rgba(15,23,42,0.05), 0 10px 28px -14px rgba(15,23,42,0.24)"
                 : "0 1px 2px rgba(15,23,42,0.04), 0 8px 24px -12px rgba(15,23,42,0.10)",
-              fontSize: 18,
-              lineHeight: 1.45,
-              transformOrigin: "top center",
+              fontSize: 14,
+              lineHeight: 1.5,
+              transformOrigin: "top right",
+              // Use backwards fill for the entrance animation so height styles return to
+              // inline styles once it finishes; otherwise the keyframe's fixed 60px would
+              // stick around in fill mode and permanently clamp the expanded toast
               animation: notice.exiting
                 ? "notice-shelf-out 0.18s ease-in forwards"
-                : "notice-shelf-in 0.18s ease-out both",
+                : "notice-shelf-in 0.18s ease-out backwards",
               padding: "0 12px",
             }}
           >
@@ -1059,9 +1110,18 @@ function NoticeShelf({ notices, floating = false }: { notices: NoticeItem[]; flo
                 borderRadius: "50%",
                 background: color,
                 flexShrink: 0,
+                // Align with the optical center of the first text line: 14px vertical
+                // padding + (21px line box - 7px dot) / 2
+                marginTop: 21,
               }}
             />
-            <span style={{ padding: "14px 0", minWidth: 0, maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {/* Full text by default: pre-line preserves \n (nowrap/normal collapse
+                newlines into spaces) and long lines wrap instead of truncating;
+                content taller than the cap scrolls inside the text area */}
+            <span
+              tabIndex={0}
+              style={{ padding: "14px 0", minWidth: 0, maxWidth: "100%", maxHeight: NOTICE_TEXT_MAX_HEIGHT_PX, overflowY: "auto", scrollbarWidth: "thin", whiteSpace: "pre-line", wordBreak: "break-word" }}
+            >
               {notice.message}
             </span>
           </div>
@@ -1113,6 +1173,9 @@ function ExtensionDialog({
         aria-modal="true"
         style={{
           width: "min(560px, 100%)",
+          maxHeight: "min(760px, 100%)",
+          display: "flex",
+          flexDirection: "column",
           border: "1px solid var(--border)",
           borderRadius: 8,
           background: "var(--bg)",
@@ -1120,12 +1183,19 @@ function ExtensionDialog({
           overflow: "hidden",
         }}
       >
-        <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--border)" }}>
+        <div style={{ flexShrink: 0, padding: "12px 14px", borderBottom: "1px solid var(--border)" }}>
           <div style={{ color: "var(--text)", fontSize: 14, fontWeight: 650 }}>{request.title}</div>
           <div style={{ marginTop: 3, color: "var(--text-dim)", fontSize: 11, fontFamily: "var(--font-mono)" }}>{t("chat.extensionRequest")}</div>
         </div>
 
-        <div style={{ padding: 14 }}>
+        <div
+          style={{
+            padding: 14,
+            ...(request.method === "select"
+              ? { flex: "1 1 auto", minHeight: 0, overflowY: "auto" }
+              : {}),
+          }}
+        >
           {request.method === "confirm" && (
             <div style={{ color: "var(--text-muted)", fontSize: 13, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{request.message}</div>
           )}
@@ -1145,6 +1215,7 @@ function ExtensionDialog({
                     cursor: "pointer",
                     textAlign: "left",
                     fontSize: 13,
+                    overflowWrap: "anywhere",
                   }}
                 >
                   {option}
@@ -1201,7 +1272,7 @@ function ExtensionDialog({
           )}
         </div>
 
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, padding: "10px 14px", borderTop: "1px solid var(--border)", background: "var(--bg-panel)" }}>
+        <div style={{ flexShrink: 0, display: "flex", justifyContent: "flex-end", gap: 8, padding: "10px 14px", borderTop: "1px solid var(--border)", background: "var(--bg-panel)" }}>
           <button
             onClick={() => onRespond(request, { cancelled: true })}
             style={{
@@ -1251,14 +1322,6 @@ function ExtensionDialog({
 }
 
 type ExtensionCustomRequest = Extract<ExtensionUiRequest, { method: "custom" }>;
-
-function renderAnsiLine(line: string, keyPrefix: string): ReactNode[] {
-  return parseAnsiLine(line).map((segment, index) => (
-    Object.keys(segment.style).length > 0
-      ? <span key={`${keyPrefix}-${index}`} style={segment.style}>{segment.text}</span>
-      : segment.text
-  ));
-}
 
 function ExtensionCustomPanel({
   request,
@@ -1386,12 +1449,7 @@ function ExtensionCustomPanel({
             whiteSpace: "pre",
           }}
         >
-          {(displayLines.length ? displayLines : [""]).map((line, index, allLines) => (
-            <Fragment key={index}>
-              {renderAnsiLine(line, `line-${index}`)}
-              {index < allLines.length - 1 ? "\n" : null}
-            </Fragment>
-          ))}
+          <AnsiText text={displayLines.join("\n")} />
         </pre>
       </div>
     </div>
